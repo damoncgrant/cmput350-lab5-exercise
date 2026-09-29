@@ -1,3 +1,4 @@
+#include <algorithm>
 #include <iostream>
 #include <optional>
 #include <vector>
@@ -73,18 +74,70 @@ void handleInput(sf::Window& window, bool& shouldQuit) {
         } else if (const auto* mouse = event->getIf<sf::Event::MouseMoved>()) {
             // TODO: (Part 3) Move the selected control point to mouse->position.
             if (currentPoint >=0) {
-                points[currentPoint] = static_cast<Point2D>(mouse->position);
+                Point2D newPosition = static_cast<Point2D>(mouse->position);
+                Point2D movement = newPosition - points[currentPoint];
+                points[currentPoint] = newPosition;
+
+                if (currentPoint > 0 &&
+                    currentPoint + 1 < static_cast<int>(points.size()) &&
+                    currentPoint % 3 == 0) {
+                    points[currentPoint - 1] += movement;
+                    points[currentPoint + 1] += movement;
+                }
             }
             // TODO: (Part 4) Maintain matching slopes at shared endpoints.
             // When moving point 3, move point 5 without changing its distance
             // from point 4 (point numbers here start at 1).
+            for (int sharedPoint = 3;
+                 sharedPoint + 1 < static_cast<int>(points.size());
+                 sharedPoint += 3) {
+                const int incomingHandle = sharedPoint - 1;
+                const int outgoingHandle = sharedPoint + 1;
+
+                if (currentPoint != incomingHandle && currentPoint != outgoingHandle) {
+                    continue;
+                }
+
+                const bool movingIncoming = currentPoint == incomingHandle;
+                const int oppositeHandle = movingIncoming ? outgoingHandle : incomingHandle;
+                const float oppositeDistance =
+                    distance(points[oppositeHandle], points[sharedPoint]);
+                Point2D tangent = movingIncoming
+                    ? points[sharedPoint] - points[incomingHandle]
+                    : points[outgoingHandle] - points[sharedPoint];
+                const float tangentLength =
+                    std::sqrt(tangent.x * tangent.x + tangent.y * tangent.y);
+
+                if (tangentLength > 0.0f) {
+                    Point2D direction = tangent / tangentLength;
+                    points[oppositeHandle] = movingIncoming
+                        ? points[sharedPoint] + direction * oppositeDistance
+                        : points[sharedPoint] - direction * oppositeDistance;
+                }
+            }
         } else if (const auto* key = event->getIf<sf::Event::KeyPressed>()) {
             // TODO: (Part 4) '+' adds three control points; '-' removes three,
             // keeping at least four points.
-            if (sf::Keyboard::isKeyPressed(sf::Keyboard::Key::Add)) {
-                
-            }
-            if (sf::Keyboard::isKeyPressed(sf::Keyboard::Key::Subtract)) {
+            const bool addPressed = key->code == sf::Keyboard::Key::Equal ||
+                                    key->code == sf::Keyboard::Key::Add;
+            const bool subtractPressed = key->code == sf::Keyboard::Key::Hyphen ||
+                                         key->code == sf::Keyboard::Key::Subtract;
+
+            if (addPressed) {
+                std::vector<Point2D> lastSeg(points.end() - 4, points.end());
+                Point2D slope = getSlope(lastSeg, 1.0f);
+                float slopeLength = std::sqrt(slope.x * slope.x + slope.y * slope.y);
+                Point2D lastPoint = points.back();
+
+                if (slopeLength > 0.0f) {
+                    Point2D direction = slope / slopeLength;
+                    float spacing = 75.0f;
+
+                    for (int i = 1; i <= 3; ++i) {
+                        points.push_back(lastPoint + direction * (spacing * i));
+                    }
+                }
+            } else if (subtractPressed) {
                 if (points.size() > 4) {
                     // Remove 3 points
                     points.pop_back();
@@ -103,19 +156,31 @@ void render(sf::RenderWindow& window) {
     // code from your project. Draw all four control points as circles after drawing the curve.
     // ====== ====== ======
     const int samples = 100;
-    sf::VertexArray curve(sf::PrimitiveType::LineStrip, samples);
+    int segCount = (points.size() - 1) / 3;
 
-    for (int i = 0; i < samples; ++i) {
-        float t = static_cast<float>(i) / static_cast<float>(samples - 1);
-        Point2D curr = getPoint(points, t);
-        curve[i].position = curr;
-        curve[i].color = sf::Color::Cyan;
+    for (int segIndex = 0; segIndex < segCount; ++segIndex) {
+        int start = segIndex * 3;
+
+        std::vector<Point2D> seg(
+            points.begin() + start,
+            points.begin() + start + 4
+        );
+
+        sf::VertexArray curve(sf::PrimitiveType::LineStrip, samples);
+
+        for (int i = 0; i < samples; ++i) {
+            float t = static_cast<float>(i) / static_cast<float>(samples - 1);
+            Point2D curr = getPoint(seg, t);
+            curve[i].position = curr;
+            curve[i].color = sf::Color::Cyan;
+        }
+        window.draw(curve);
     }
-    window.draw(curve);
-
+    
+    // Drawing control points
     for (int i = 0; i < points.size(); ++i) {
         Point2D curr = points[i];
-        sf::CircleShape currPoint(15.0f);
+        sf::CircleShape currPoint(10.0f);
         currPoint.setOrigin({10.0f, 10.0f});
         currPoint.setPosition(curr);
         currPoint.setFillColor(sf::Color::Yellow);
@@ -133,17 +198,24 @@ void render(sf::RenderWindow& window) {
     static int direction = 1;
 
     t += direction / (ANIMATION_TIME * FPS_LIMIT);
-    if (t >= 1) {
-        t = 1.0f;
+    if (t >= segCount) {
+        t = static_cast<float>(segCount);
         direction = -1;
     } else if (t <= 0) {
         t = 0.f;
         direction = 1;
     }
-    square.setPosition(getPoint(points, t));
+
+    int squareSegIndex = std::min(static_cast<int>(t), segCount - 1);
+    float localT = t - squareSegIndex;
+    std::vector<Point2D> squareSegment(
+        points.begin() + squareSegIndex * 3,
+        points.begin() + squareSegIndex * 3 + 4
+    );
+    square.setPosition(getPoint(squareSegment, localT));
 
     // Rotation
-    Point2D slope = getSlope(points, t);
+    Point2D slope = getSlope(squareSegment, localT);
     float angle = std::atan2(slope.y, slope.x);
     square.setRotation(sf::radians(angle));
 
@@ -152,23 +224,21 @@ void render(sf::RenderWindow& window) {
 
     // ====== ====== ======
     // TODO: (Part 3) Draw control handles from point 1 to 2 and point 3 to 4.
-    sf::VertexArray line1(sf::PrimitiveType::Lines, 2);
-    sf::VertexArray line2(sf::PrimitiveType::Lines, 2);
-    line1[0].position = points[0];
-    line1[0].color = sf::Color::White;
-    line1[1].position = points[1];
-    line1[1].color = sf::Color::White;
+    for (int segIndex = 0; segIndex < segCount; ++segIndex) {
+        int start = segIndex * 3;
+        sf::VertexArray handles(sf::PrimitiveType::Lines, 4);
 
-    line2[0].position = points[2];
-    line2[0].color = sf::Color::White;
-    line2[1].position = points[3];
-    line2[1].color = sf::Color::White;
+        handles[0].position = points[start];
+        handles[1].position = points[start + 1];
+        handles[2].position = points[start + 2];
+        handles[3].position = points[start + 3];
 
-    window.draw(line1);
-    window.draw(line2);
+        for (std::size_t i = 0; i < handles.getVertexCount(); ++i) {
+            handles[i].color = sf::Color::White;
+        }
 
-    // TODO: (Part 4) Draw all connected cubic Bezier segments and their handles.
-    // ====== ====== ======
+        window.draw(handles);
+    }
 
     // ====== ====== ======
     // TODO: (Bonus) Support multiple curves, a Galaga screen overlay at a 1:2 ratio, and exporting
